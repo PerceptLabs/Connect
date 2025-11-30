@@ -1,5 +1,9 @@
 # Connect: The Collaborative AI Workspace
 
+<p align="center">
+  <img src="assets/logo.png" alt="Connect Logo" width="200"/>
+</p>
+
 Connect is a local-first, offline-capable project management workspace where users collaborate with multiple AI "Peers" (Local & Cloud models) to evolve complex plans.
 
 ## Features

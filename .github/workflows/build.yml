@@ -1,0 +1,57 @@
+name: Build Connect
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20'
+
+    - name: Install Frontend Dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Build Frontend
+      run: |
+        cd frontend
+        npm run build
+
+    - name: Prepare Redbean Binary
+      run: |
+        if [ -f bin/redbean.com ]; then
+          echo "Using included Purpose-Built Redbean..."
+          cp bin/redbean.com connect.com
+        else
+          echo "Custom binary not found in bin/. Downloading standard fallback..."
+          wget https://redbean.dev/redbean-latest.com -O connect.com
+        fi
+        chmod +x connect.com
+
+    - name: Pack Application
+      run: |
+        # Zip Lua backend files
+        zip -r connect.com .init.lua src/ peers.json schema.sql
+
+        # Zip Frontend build
+        cd frontend/dist
+        zip -r ../../connect.com .
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: connect-app
+        path: connect.com
