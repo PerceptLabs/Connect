@@ -1,27 +1,68 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../utils/api';
 import { Plus, MessageSquare, Server, MessageCircle } from 'lucide-react';
+import AdvancedSearch from '../AdvancedSearch';
 
-export function Sidebar({ workspaceId, setWorkspaceId, activeView, onNavigate }) {
+export function Sidebar({ workspaceId, setWorkspaceId, activeView, onNavigate, threadId, setThreadId }) {
     const [workspaces, setWorkspaces] = useState([]);
     const [threads, setThreads] = useState([]);
+    const [showNewThread, setShowNewThread] = useState(false);
+    const [newThreadName, setNewThreadName] = useState("");
 
     useEffect(() => {
-        api.getWorkspaces().then(res => setWorkspaces(res.workspaces || [])).catch(console.error);
+        api.getWorkspaces().then(res => {
+            const ws = res.workspaces || [];
+            setWorkspaces(ws);
+            if (ws.length > 0 && !workspaceId) {
+                setWorkspaceId(ws[0].id);
+            }
+        }).catch(console.error);
     }, []);
 
     useEffect(() => {
         if(workspaceId) {
-            api.getThreads(workspaceId).then(res => setThreads(res.threads || [])).catch(console.error);
+            api.getThreads(workspaceId).then(res => {
+                const ts = res.threads || [];
+                setThreads(ts);
+                // If no thread selected, maybe select first? Or let user choose.
+                // If we want parity with "localhost-only prototype", usually auto-select or clean slate.
+                if (ts.length > 0 && !threadId) {
+                   // setThreadId(ts[0].id); // Optional: auto-select
+                }
+            }).catch(console.error);
         }
     }, [workspaceId]);
+
+    const handleCreateThread = () => {
+        if (!newThreadName.trim() || !workspaceId) return;
+        api.createThread(workspaceId, newThreadName).then(res => {
+            setThreads([res, ...threads]);
+            setThreadId(res.id);
+            setShowNewThread(false);
+            setNewThreadName("");
+        });
+    };
+
+    const handleImport = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            api.importWorkspace(file).then(() => {
+                alert("Import successful! Reloading...");
+                window.location.reload();
+            }).catch(err => alert("Import failed: " + err));
+        }
+    };
 
     return (
         <div className="w-64 bg-gray-900 text-white flex flex-col h-full border-r border-gray-800 flex-shrink-0">
             <div className="p-4 border-b border-gray-800">
                 <div className="text-xl font-bold tracking-tight mb-6 flex items-center gap-2">
                     <div className="w-6 h-6 bg-blue-600 rounded flex items-center justify-center text-[10px]">C</div>
-                    Connect v1.0
+                    Connect v2.0
+                </div>
+
+                <div className="mb-6">
+                    <AdvancedSearch />
                 </div>
 
                 {/* Main Nav */}
@@ -38,6 +79,20 @@ export function Sidebar({ workspaceId, setWorkspaceId, activeView, onNavigate })
                     >
                         <Server size={18} /> Peer Network
                     </div>
+                </div>
+
+                <div className="mb-6 flex gap-2">
+                     <button
+                        onClick={() => workspaceId && api.exportWorkspace(workspaceId)}
+                        className="flex-1 bg-gray-800 text-xs py-1 rounded hover:bg-gray-700 text-gray-300"
+                        title="Export Workspace"
+                     >
+                        Export
+                     </button>
+                     <label className="flex-1 bg-gray-800 text-xs py-1 rounded hover:bg-gray-700 text-gray-300 text-center cursor-pointer">
+                        Import
+                        <input type="file" className="hidden" accept=".json" onChange={handleImport} />
+                     </label>
                 </div>
 
                 {activeView === 'chat' && (
@@ -58,12 +113,38 @@ export function Sidebar({ workspaceId, setWorkspaceId, activeView, onNavigate })
                 <div className="flex-1 overflow-y-auto p-2">
                     <div className="text-xs text-gray-500 uppercase font-semibold mb-2 px-2 mt-4 flex justify-between items-center">
                         <span>Threads</span>
-                        <Plus size={12} className="cursor-pointer hover:text-white" />
+                        <Plus
+                            size={12}
+                            className="cursor-pointer hover:text-white"
+                            onClick={() => setShowNewThread(true)}
+                        />
                     </div>
+
+                    {showNewThread && (
+                        <div className="px-2 mb-2">
+                            <input
+                                autoFocus
+                                className="w-full bg-gray-800 text-sm text-white border border-blue-500 rounded p-1 mb-1"
+                                placeholder="Thread name..."
+                                value={newThreadName}
+                                onChange={e => setNewThreadName(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleCreateThread()}
+                            />
+                            <div className="flex gap-2 justify-end text-[10px]">
+                                <button onClick={() => setShowNewThread(false)} className="text-gray-400 hover:text-white">Cancel</button>
+                                <button onClick={handleCreateThread} className="text-blue-400 hover:text-blue-300">Create</button>
+                            </div>
+                        </div>
+                    )}
+
                     {threads.map(t => (
-                        <div key={t.id} className="flex items-center gap-2 p-2 rounded hover:bg-gray-800 cursor-pointer text-sm text-gray-300 transition-colors">
-                            <MessageSquare size={14} className="text-gray-500" />
-                            {t.name}
+                        <div
+                            key={t.id}
+                            onClick={() => setThreadId(t.id)}
+                            className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition-colors ${threadId === t.id ? 'bg-blue-900/30 text-blue-200' : 'text-gray-300 hover:bg-gray-800'}`}
+                        >
+                            <MessageSquare size={14} className={threadId === t.id ? 'text-blue-400' : 'text-gray-500'} />
+                            <div className="truncate">{t.name}</div>
                         </div>
                     ))}
                     {threads.length === 0 && <div className="text-xs text-gray-600 px-2 italic">No threads yet</div>}
