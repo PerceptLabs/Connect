@@ -4,8 +4,7 @@ import { SmartContext } from '../../components/SmartContext';
 import { PeerSelector } from '../../components/PeerSelector';
 import { api } from '../../utils/api';
 
-export default function WorkspaceChat({ workspaceId }) {
-  const [threadId, setThreadId] = useState(null);
+export default function WorkspaceChat({ workspaceId, threadId, setThreadId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [peerId, setPeerId] = useState(null); // Default null to force selection or load first?
@@ -13,20 +12,16 @@ export default function WorkspaceChat({ workspaceId }) {
   // Shortcuts
   useHotkeys('meta+enter, ctrl+enter', () => handleSend(), { enableOnFormTags: true });
 
-  // Load threads when workspace changes
+  // Load messages when threadId changes
   useEffect(() => {
-      if (workspaceId) {
-          api.getThreads(workspaceId).then(res => {
-              if (res.threads && res.threads.length > 0) {
-                  setThreadId(res.threads[0].id);
-              } else {
-                  api.createThread(workspaceId, "General").then(t => setThreadId(t.id));
-              }
-          });
+      if (threadId) {
+          api.getMessages(threadId).then(res => {
+              setMessages(res.messages || []);
+          }).catch(console.error);
       } else {
-          setThreadId(null);
+          setMessages([]);
       }
-  }, [workspaceId]);
+  }, [threadId]);
 
   // Load initial peer
   useEffect(() => {
@@ -42,17 +37,27 @@ export default function WorkspaceChat({ workspaceId }) {
           return;
       }
 
-      const newMsgs = [...messages, { role: 'user', content: input }];
-      setMessages(newMsgs);
+      // Optimistic update
+      const tempUserMsg = { role: 'user', content: input, created_at: new Date().toISOString() };
+      setMessages(prev => [...prev, tempUserMsg]);
       setInput("");
 
       try {
-          const ctx = await api.selectContext(threadId, input);
-          const res = await api.generate(peerId, newMsgs, ctx.chunks || []);
-          setMessages([...newMsgs, { role: 'assistant', content: res.content || res.error || "No response" }]);
+          // Persist user message
+          await api.sendMessage(threadId, tempUserMsg.content, 'user');
+
+          const ctx = await api.selectContext(threadId, tempUserMsg.content);
+          const res = await api.generate(peerId, [...messages, tempUserMsg], ctx.chunks || []);
+
+          const aiContent = res.content || res.error || "No response";
+
+          // Persist AI message
+          await api.sendMessage(threadId, aiContent, 'assistant', { peerId, model: res.model });
+
+          setMessages(prev => [...prev, { role: 'assistant', content: aiContent, created_at: new Date().toISOString() }]);
       } catch(e) {
           console.error(e);
-          setMessages([...newMsgs, { role: 'system', content: "Error generating response" }]);
+          setMessages(prev => [...prev, { role: 'system', content: "Error generating response" }]);
       }
   };
 
@@ -63,7 +68,9 @@ export default function WorkspaceChat({ workspaceId }) {
       <div className="flex-1 flex flex-col min-w-0 border-r border-gray-200 h-full bg-white">
          <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
             <h2 className="font-semibold text-lg">Chat</h2>
-            <div className="text-xs text-gray-500">Thread: {threadId ? threadId.substring(0,8) : "None"}</div>
+            <div className="text-xs text-gray-500">
+                {threadId ? "Active Thread" : "Select a thread"}
+            </div>
          </div>
 
          <div className="flex-1 overflow-y-auto p-4 space-y-4">
