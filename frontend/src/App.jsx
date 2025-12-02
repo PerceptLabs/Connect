@@ -3,6 +3,7 @@ import WorkspaceChat from './pages/WorkspaceChat';
 import PeerNetwork from './pages/PeerNetwork';
 import { Sidebar } from './components/Sidebar';
 import { ConflictModal } from './components/ConflictModal';
+import { LoginModal } from './components/LoginModal';
 import NetworkInfo from './components/NetworkInfo';
 import { api } from './utils/api';
 import { ws } from './utils/websocket';
@@ -13,8 +14,12 @@ function App() {
   const [threadId, setThreadId] = useState(null);
   const [conflict, setConflict] = useState(null);
   const [connected, setConnected] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
 
   useEffect(() => {
+    // Auth handler
+    api.setUnauthorizedHandler(() => setNeedsAuth(true));
+
     ws.connect();
     const unsub = ws.subscribe(msg => {
         if (msg.type === "connection_status") {
@@ -81,6 +86,17 @@ function App() {
         </div>
         {conflict && <ConflictModal conflict={conflict} onResolve={handleResolve} />}
         <NetworkInfo />
+        {needsAuth && (
+            <LoginModal onSuccess={() => {
+                setNeedsAuth(false);
+                // Retry sync check after login
+                api.syncStatus().then(res => {
+                    if (res.conflicts && res.conflicts.length > 0) {
+                        setConflict(res.conflicts[0]);
+                    }
+                }).catch(console.error);
+            }} />
+        )}
     </div>
   );
 }
