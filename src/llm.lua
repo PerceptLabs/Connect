@@ -1,12 +1,26 @@
 local M = {}
 
 -- Helper to prepare context
-function M.prepare_messages(messages, chunks)
-    local system_context = "CONTEXT DOCUMENTS:\n"
-    for _, chunk in ipairs(chunks) do
-        system_context = system_context .. "---\n"
-        if chunk.label then system_context = system_context .. "Section: " .. chunk.label .. "\n" end
-        system_context = system_context .. chunk.content .. "\n"
+function M.prepare_messages(messages, chunks, memories)
+    local system_context = ""
+
+    -- Add memories first
+    if memories and #memories > 0 then
+        system_context = system_context .. "PROJECT MEMORY (Past Decisions):\n"
+        for _, mem in ipairs(memories) do
+            system_context = system_context .. "• " .. mem.content:sub(1, 300) .. "\n"
+        end
+        system_context = system_context .. "\n"
+    end
+
+    -- Add document context
+    if chunks and #chunks > 0 then
+        system_context = system_context .. "CONTEXT DOCUMENTS:\n"
+        for _, chunk in ipairs(chunks) do
+            system_context = system_context .. "---\n"
+            if chunk.label then system_context = system_context .. "Section: " .. chunk.label .. "\n" end
+            system_context = system_context .. chunk.content .. "\n"
+        end
     end
 
     local new_messages = {}
@@ -34,21 +48,21 @@ function M.prepare_messages(messages, chunks)
     return new_messages
 end
 
-function M.generate(peer, messages, chunks)
+function M.generate(peer, messages, chunks, memories)
     if peer.provider == "mock" then
         return {
             content = "This is a MOCK response from " .. peer.name .. ".\nI received " .. #chunks .. " chunks of context."
         }
     elseif peer.provider == "ollama" then
-        return M.call_ollama(peer, messages, chunks)
+        return M.call_ollama(peer, messages, chunks, memories)
     else
         -- Default to OpenAI compatible (covers openai, lmstudio, nanogpt, etc)
-        return M.call_openai(peer, messages, chunks)
+        return M.call_openai(peer, messages, chunks, memories)
     end
 end
 
-function M.call_ollama(peer, messages, chunks)
-    local full_messages = M.prepare_messages(messages, chunks)
+function M.call_ollama(peer, messages, chunks, memories)
+    local full_messages = M.prepare_messages(messages, chunks, memories)
     local payload = {
         model = peer.model_id or peer.model,
         messages = full_messages,
@@ -74,8 +88,8 @@ function M.call_ollama(peer, messages, chunks)
     return { content = response.message.content }
 end
 
-function M.call_openai(peer, messages, chunks)
-    local full_messages = M.prepare_messages(messages, chunks)
+function M.call_openai(peer, messages, chunks, memories)
+    local full_messages = M.prepare_messages(messages, chunks, memories)
     local payload = {
         model = peer.model_id or peer.model,
         messages = full_messages

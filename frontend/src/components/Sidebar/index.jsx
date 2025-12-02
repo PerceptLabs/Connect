@@ -11,25 +11,26 @@ export function Sidebar({ workspaceId, setWorkspaceId, activeView, onNavigate, t
 
     useEffect(() => {
         api.getWorkspaces().then(res => {
-            const ws = res.workspaces || [];
+            const ws = (res && Array.isArray(res.workspaces)) ? res.workspaces : [];
             setWorkspaces(ws);
             if (ws.length > 0 && !workspaceId) {
                 setWorkspaceId(ws[0].id);
             }
-        }).catch(console.error);
+        }).catch(err => {
+            console.error(err);
+            setWorkspaces([]);
+        });
     }, []);
 
     useEffect(() => {
         if(workspaceId) {
             api.getThreads(workspaceId).then(res => {
-                const ts = res.threads || [];
+                const ts = (res && Array.isArray(res.threads)) ? res.threads : [];
                 setThreads(ts);
-                // If no thread selected, maybe select first? Or let user choose.
-                // If we want parity with "localhost-only prototype", usually auto-select or clean slate.
-                if (ts.length > 0 && !threadId) {
-                   // setThreadId(ts[0].id); // Optional: auto-select
-                }
-            }).catch(console.error);
+            }).catch(err => {
+                console.error(err);
+                setThreads([]);
+            });
         }
     }, [workspaceId]);
 

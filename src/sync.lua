@@ -1,4 +1,6 @@
 local docs = require("src.docs")
+local websocket_mod = require("src.websocket")
+local db_mod = require("src.db")
 local M = {}
 
 local function parse_time(iso)
@@ -40,19 +42,59 @@ function M.check_sync(db)
 
          if skew > 2 then
              -- Timestamps diverge => Conflict
-             table.insert(conflicts, {
-                document_id = row.id,
-                workspace_id = row.workspace_id,
-                file_path = row.file_path,
-                user_content = content,
-                ai_content = row.current_content,
-                ancestor_version_id = row.current_version_id
-             })
+             -- Persist to DB
+             local conflict_id = db_mod.uuid()
+
+             -- Check if conflict already exists?
+             local check = db:prepare("SELECT id FROM conflict_versions WHERE document_id = ?")
+             check:bind_values(row.id)
+             local exists = (check:step() == sqlite3.ROW)
+             check:finalize()
+
+             if not exists then
+                 local ins = db:prepare([[
+                    INSERT INTO conflict_versions
+                    (id, document_id, user_content, ai_content, ancestor_version_id, proposer, proposal_reason)
+                    VALUES (?, ?, ?, ?, ?, 'sync', 'File System Conflict')
+                 ]])
+                 ins:bind_values(conflict_id, row.id, content, row.current_content, row.current_version_id)
+                 ins:step()
+                 ins:finalize()
+
+                 local conf_obj = {
+                    id = conflict_id,
+                    document_id = row.id,
+                    workspace_id = row.workspace_id,
+                    file_path = row.file_path,
+                    user_content = content,
+                    ai_content = row.current_content,
+                    ancestor_version_id = row.current_version_id
+                 }
+                 table.insert(conflicts, conf_obj)
+
+                 -- Broadcast
+                 websocket_mod.broadcast({
+                    type = "conflict",
+                    workspace_id = row.workspace_id,
+                    file_path = row.file_path,
+                    conflict_id = conflict_id
+                 })
+                 print("Conflict detected and broadcast: " .. row.file_path)
+             else
+                 -- Already tracking conflict, ignore or update?
+             end
          else
              -- Normal Sync (Timestamps align or close enough)
              print("Sync detected change: " .. full_path)
              docs.commit(db, row.workspace_id, row.file_path, content, "External Sync", "external_sync", "watcher")
              updates = updates + 1
+
+             -- If there was a conflict, clear it?
+             -- If we commit, we assume it resolves state.
+             local del = db:prepare("DELETE FROM conflict_versions WHERE document_id = ?")
+             del:bind_values(row.id)
+             del:step()
+             del:finalize()
          end
       end
     end

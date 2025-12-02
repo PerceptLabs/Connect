@@ -1,12 +1,25 @@
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8080/api' : '/api';
 
 // Simple token management - in real app, might want to store in localStorage/sessionStorage
-let authToken = '';
+let authToken = sessionStorage.getItem('connect_auth') || '';
+
+// Callback to trigger login UI
+let onUnauthorized = () => {};
 
 const getHeaders = (extra = {}) => {
   const headers = { ...extra };
   if (authToken) {
-    headers['Authorization'] = authToken;
+    // Check if token already has Bearer prefix or not
+    // The server expects "Bearer <token>" usually?
+    // auth.lua: "Bearer " .. token or just token match?
+    // auth.lua: verify_session checks `token_header:match("Bearer%s+(.+)")`
+    // So we must prefix.
+    // If we set authToken as just the token string, prefix here.
+    if (authToken.startsWith('Bearer ')) {
+         headers['Authorization'] = authToken;
+    } else {
+         headers['Authorization'] = `Bearer ${authToken}`;
+    }
   }
   return headers;
 };
@@ -17,15 +30,25 @@ const request = async (url, options = {}) => {
         ...options,
         headers: getHeaders(options.headers)
     });
-    // Check for 401 ?
+
+    if (res.status === 401) {
+        onUnauthorized();
+        // Return empty or error to stop downstream
+        throw new Error("Unauthorized");
+    }
+
     return res.json();
 };
 
 export const api = {
+  setUnauthorizedHandler: (fn) => { onUnauthorized = fn; },
   // Methods to set/get token (useful if we implement login UI or auto-discovery handshake)
   setToken: (t) => { authToken = t; },
+  getToken: () => authToken,
 
   get: (url) => request(`${API_BASE}${url}`),
+  post: (url, body) => request(`${API_BASE}${url}`, { method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'} }),
+  request: (url, opts) => request(`${API_BASE}${url}`, opts), // Expose generic request for flexible usage
 
   getWorkspaces: () => request(`${API_BASE}/workspaces`),
   createWorkspace: (name) => request(`${API_BASE}/workspaces`, { method: 'POST', body: JSON.stringify({ name }), headers: {'Content-Type': 'application/json'} }),

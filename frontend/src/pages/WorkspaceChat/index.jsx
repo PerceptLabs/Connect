@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
+import { Brain } from 'lucide-react';
 import { SmartContext } from '../../components/SmartContext';
 import { PeerSelector } from '../../components/PeerSelector';
 import { api } from '../../utils/api';
@@ -8,6 +9,7 @@ export default function WorkspaceChat({ workspaceId, threadId, setThreadId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [peerId, setPeerId] = useState(null); // Default null to force selection or load first?
+  const [summarizing, setSummarizing] = useState(false);
 
   // Shortcuts
   useHotkeys('meta+enter, ctrl+enter', () => handleSend(), { enableOnFormTags: true });
@@ -68,8 +70,33 @@ export default function WorkspaceChat({ workspaceId, threadId, setThreadId }) {
       <div className="flex-1 flex flex-col min-w-0 border-r border-gray-200 h-full bg-white">
          <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
             <h2 className="font-semibold text-lg">Chat</h2>
-            <div className="text-xs text-gray-500">
-                {threadId ? "Active Thread" : "Select a thread"}
+            <div className="flex items-center gap-3">
+                 <button
+                    onClick={async () => {
+                        if (!threadId) return;
+                        setSummarizing(true);
+                        try {
+                            const result = await api.post('/memories/summarize', { thread_id: threadId });
+                            if (result.error) {
+                                alert('Error: ' + result.error);
+                            } else {
+                                alert('Thread summarized to project memory!');
+                            }
+                        } catch (e) {
+                            alert('Failed to summarize');
+                        }
+                        setSummarizing(false);
+                    }}
+                    disabled={summarizing || !threadId}
+                    className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 disabled:opacity-50 flex items-center gap-1 transition-colors"
+                    title="Summarize decisions to memory"
+                >
+                    <Brain size={14} />
+                    {summarizing ? 'Saving...' : 'Remember'}
+                </button>
+                <div className="text-xs text-gray-500">
+                    {threadId ? "Active Thread" : "Select a thread"}
+                </div>
             </div>
          </div>
 

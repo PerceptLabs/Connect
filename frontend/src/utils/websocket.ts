@@ -10,7 +10,11 @@ export const ws = {
     connect: () => {
         if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
-        socket = new WebSocket(API_WS);
+        // Add token to query param
+        const token = sessionStorage.getItem('connect_auth');
+        const url = token ? `${API_WS}?token=${encodeURIComponent(token)}` : API_WS;
+
+        socket = new WebSocket(url);
 
         socket.onopen = () => {
             console.log("WS Connected");

@@ -1,0 +1,10 @@
+Bootstrapping Admin User...
+========================================
+CONNECT ADMIN CREDENTIALS (SAVE THESE!)
+Password: xQguhK6X
+Recovery: 2UUbcdx5isxQ
+========================================
+SUCCESS: Purpose-Built Redbean Detected. FTS5 Enabled.
+I2025-12-02T07:51:34.750346:tool/net/redbean.c:6893:connect:26157] (srvr) listen http://127.0.0.1:8081
+I2025-12-02T07:51:34+000029:tool/net/redbean.c:6893:connect:26157] (srvr) listen http://192.168.0.2:8081
+I2025-12-02T07:51:34+000024:tool/net/redbean.c:6893:connect:26157] (srvr) listen http://172.17.0.1:8081
