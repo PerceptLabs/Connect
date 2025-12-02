@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../utils/api';
-import { Trash2, Plus, RefreshCw, Server } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Server, Edit2 } from 'lucide-react';
 
 export default function PeerNetwork() {
     const [peers, setPeers] = useState([]);
     const [isAdding, setIsAdding] = useState(false);
+    const [editingId, setEditingId] = useState(null);
     const [newPeer, setNewPeer] = useState({ name: '', provider: 'ollama', base_url: 'http://localhost:11434', api_key: '', model_id: '' });
     const [availableModels, setAvailableModels] = useState([]);
     const [discovering, setDiscovering] = useState(false);
@@ -23,7 +24,7 @@ export default function PeerNetwork() {
             const res = await api.discoverPeer(newPeer.provider, newPeer.base_url, newPeer.api_key);
             if (res.status === 'healthy') {
                 setAvailableModels(res.models);
-                if (res.models.length > 0) setNewPeer({ ...newPeer, model_id: res.models[0].id });
+                if (res.models.length > 0 && !newPeer.model_id) setNewPeer({ ...newPeer, model_id: res.models[0].id });
                 setStatus("Connected. Models found.");
             } else {
                 setStatus("Error: " + (res.error || "Unknown error"));
@@ -37,24 +38,70 @@ export default function PeerNetwork() {
 
     const handleSave = async () => {
         if (!newPeer.name || !newPeer.model_id) return;
-        await api.createPeer(newPeer);
+        if (editingId) {
+            // Update logic (we need to implement api.updatePeer or use PUT)
+            // api.ts doesn't have updatePeer yet but we added PUT endpoint.
+            // Let's rely on fetch here or add to api.ts.
+            // Since I didn't add updatePeer to api.ts explicitly in plan step 6 (I modified api.ts for 401s),
+            // I can add a direct call here using api.request if exposed or just fetch.
+            // api.ts exports `request`? No, internal.
+            // But api.ts has generic methods.
+            // I'll assume I can just use fetch or api.js needs update.
+            // Actually, I can use `api.createPeer` for new, but for update I need PUT.
+            // I will use fetch wrapper or add it now?
+            // api.js doesn't export generic `put`.
+            // I'll just use fetch here for expediency as per plan "Peer Editing".
+            await fetch(`/api/peers/${editingId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + api.getToken() // Ensure auth
+                },
+                body: JSON.stringify(newPeer)
+            });
+        } else {
+            await api.createPeer(newPeer);
+        }
+
         setIsAdding(false);
+        setEditingId(null);
         setNewPeer({ name: '', provider: 'ollama', base_url: 'http://localhost:11434', api_key: '', model_id: '' });
         setAvailableModels([]);
         setStatus('');
         loadPeers();
     };
 
+    const handleEdit = (peer) => {
+        setNewPeer({
+            name: peer.name,
+            provider: peer.provider,
+            base_url: peer.base_url,
+            api_key: '', // Don't show existing key (encrypted)
+            model_id: peer.model_id
+        });
+        setEditingId(peer.id);
+        setIsAdding(true);
+    };
+
     const handleDelete = async (id) => {
-        await api.deletePeer(id);
-        loadPeers();
+        if (confirm("Delete this peer?")) {
+            await api.deletePeer(id);
+            loadPeers();
+        }
+    };
+
+    const handleCancel = () => {
+        setIsAdding(false);
+        setEditingId(null);
+        setNewPeer({ name: '', provider: 'ollama', base_url: 'http://localhost:11434', api_key: '', model_id: '' });
+        setStatus('');
     };
 
     return (
         <div className="flex-1 p-6 bg-gray-50 overflow-y-auto h-full">
             <div className="flex justify-between items-center mb-6">
                 <h1 className="text-2xl font-bold text-gray-800">Peer Network</h1>
-                <button onClick={() => setIsAdding(true)} className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700 transition-colors">
+                <button onClick={() => { handleCancel(); setIsAdding(true); }} className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700 transition-colors">
                     <Plus size={18} /> Add Peer
                 </button>
             </div>
@@ -69,14 +116,19 @@ export default function PeerNetwork() {
                                 </div>
                                 <span className="font-semibold text-gray-800">{peer.name}</span>
                             </div>
-                            <button onClick={() => handleDelete(peer.id)} className="text-gray-400 hover:text-red-500 transition-colors">
-                                <Trash2 size={16} />
-                            </button>
+                            <div className="flex gap-1">
+                                <button onClick={() => handleEdit(peer)} className="text-gray-400 hover:text-blue-500 transition-colors p-1">
+                                    <Edit2 size={16} />
+                                </button>
+                                <button onClick={() => handleDelete(peer.id)} className="text-gray-400 hover:text-red-500 transition-colors p-1">
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
                         </div>
                         <div className="text-xs text-gray-500 mb-1 font-medium">{peer.provider} • {peer.model_id}</div>
                         <div className="text-xs text-gray-400 truncate font-mono bg-gray-50 p-1 rounded mb-2">{peer.base_url}</div>
                         <div className="flex items-center gap-1 text-[10px] text-green-600 font-medium">
-                            <div className="w-2 h-2 rounded-full bg-green-500"></div> Active
+                            <div className="w-2 h-2 rounded-full bg-green-500"></div> {peer.is_active ? "Active" : "Inactive"}
                         </div>
                     </div>
                 ))}
@@ -90,7 +142,7 @@ export default function PeerNetwork() {
             {isAdding && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
                     <div className="bg-white p-6 rounded-lg shadow-xl w-[500px]">
-                        <h2 className="text-lg font-bold mb-4">Add New Peer</h2>
+                        <h2 className="text-lg font-bold mb-4">{editingId ? "Edit Peer" : "Add New Peer"}</h2>
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Name</label>
@@ -130,7 +182,7 @@ export default function PeerNetwork() {
 
                             {newPeer.provider !== 'ollama' && (
                                 <div>
-                                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">API Key</label>
+                                    <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">API Key {editingId ? "(Leave blank to keep)" : ""}</label>
                                     <input
                                         className="w-full border p-2 rounded text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                                         placeholder="API Key (Stored locally)"
@@ -169,8 +221,10 @@ export default function PeerNetwork() {
                             </div>
                         </div>
                         <div className="flex justify-end gap-2 mt-6">
-                            <button onClick={() => setIsAdding(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded text-sm">Cancel</button>
-                            <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">Save Peer</button>
+                            <button onClick={handleCancel} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded text-sm">Cancel</button>
+                            <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
+                                {editingId ? "Update Peer" : "Save Peer"}
+                            </button>
                         </div>
                     </div>
                 </div>

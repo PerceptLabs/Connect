@@ -32,7 +32,11 @@ end
 local db = db_mod.init()
 db_mod.migrate(db)
 
+-- Auth Bootstrap
+auth.bootstrap(db)
+
 -- Safeguard 1: FTS5 Capability Check
+-- Safeguard 1: FTS5 Capability Check & Schema Init
 local fts_available = false
 local fts_status, fts_err = pcall(function()
     local res = db:exec("CREATE VIRTUAL TABLE IF NOT EXISTS fts_test_check USING fts5(content)")
@@ -43,10 +47,28 @@ local fts_status, fts_err = pcall(function()
         error("FTS5 init failed code " .. res)
     end
 end)
-if not fts_available then
-    print("WARNING: Standard Redbean Detected. FTS5 missing. Falling back to Shim logic. (" .. tostring(fts_err) .. ")")
-else
+
+if fts_available then
     print("SUCCESS: Purpose-Built Redbean Detected. FTS5 Enabled.")
+    db:exec([[
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+            content,
+            label,
+            document_version_id UNINDEXED,
+            token_count UNINDEXED
+        );
+    ]])
+else
+    print("WARNING: Standard Redbean Detected. FTS5 missing. Falling back to Shim logic. (" .. tostring(fts_err) .. ")")
+    db:exec([[
+        CREATE TABLE IF NOT EXISTS chunk_fts (
+            rowid INTEGER PRIMARY KEY,
+            content TEXT,
+            label TEXT,
+            document_version_id TEXT,
+            token_count INTEGER
+        );
+    ]])
 end
 
 -- Migration: peers.json -> SQLite
@@ -107,25 +129,98 @@ function OnHttpRequest()
     end
 
     -- Authentication Middleware
-    -- Skip auth for static assets (optional, but safer to check everything or just API)
-    -- We'll check everything but assets might be needed for login page if we had one.
-    -- Since we use token auth for API and frontend is SPA...
-    -- If it's an API call, we enforce auth.
     if path:match("^/api/") then
-        local auth_header = GetHeader("Authorization")
-        local client_ip = GetRemoteAddr() -- Redbean API
+        local client_ip = GetRemoteAddr()
+        local is_localhost = (client_ip == "127.0.0.1" or client_ip == "::1")
 
-        -- Special case: Network Info endpoint might need to be open to localhost to bootstrap?
-        -- Or just allowed.
+        -- Public Endpoints (Login/Recovery)
+        if path:match("^/api/auth/") then
+            -- Pass through
 
-        if not auth.check(auth_header, client_ip) then
-            json_response({ error = "Unauthorized" }, 401)
-            return
+        -- MCP: Always requires API Token
+        elseif path:match("^/api/mcp") then
+            local auth_header = GetHeader("Authorization")
+            if not auth.verify_api_token(db, auth_header) then
+                json_response({ error = "Unauthorized: Invalid API Token" }, 401)
+                return
+            end
+
+        -- Regular API
+        else
+            -- Check User Count for Localhost Logic
+            -- Cache this? For now, query.
+            local user_count = 1
+            local count_stmt = db:prepare("SELECT count(*) FROM users")
+            if count_stmt:step() == sqlite3.ROW then user_count = count_stmt:get_value(0) end
+            count_stmt:finalize()
+
+            local auth_required = true
+            if is_localhost and user_count <= 1 then
+                auth_required = false
+            end
+
+            if auth_required then
+                local auth_header = GetHeader("Authorization")
+                if not auth.verify_session(auth_header) then
+                    json_response({ error = "Unauthorized" }, 401)
+                    return
+                end
+            end
         end
     end
 
     -- Router
-    if path == "/api/network/info" and method == "GET" then
+    -- Auth Routes
+    if path == "/api/auth/login" and method == "POST" then
+        local data = get_json_body()
+        if not data then json_response({error="Missing body"}, 400) return end
+
+        local token
+        if data.password then
+            token = auth.login(db, data.password)
+        elseif data.recovery_token then
+            token = auth.login_recovery(db, data.recovery_token)
+        end
+
+        if token then
+            json_response({ token = token })
+        else
+            json_response({ error = "Invalid credentials" }, 401)
+        end
+        return -- Stop processing
+
+    elseif path == "/api/auth/reset-password" and method == "POST" then
+        local data = get_json_body()
+        if not data or not data.recovery_token or not data.new_password then
+            json_response({ error = "Missing params" }, 400)
+            return
+        end
+        if auth.reset_password(db, data.recovery_token, data.new_password) then
+             json_response({ success = true })
+        else
+             json_response({ error = "Invalid recovery token" }, 401)
+        end
+        return
+
+    elseif path == "/api/auth/request-recovery" and method == "POST" then
+        -- Optional: restrict to localhost? "Physical access" implies local net or machine.
+        -- Let's restrict to localhost for safety, as per description "Physical access recovery".
+        -- The user said "From phone: tap Forgot Password". Phone is remote.
+        -- So we must allow from remote.
+        auth.request_recovery(db)
+        json_response({ success = true }) -- Always say success to prevent enumeration?
+        return
+
+    elseif path == "/api/tokens" and method == "POST" then
+        -- Generate API token (Authenticated User only)
+        -- Middleware handled auth check (if remote/multi-user).
+        local data = get_json_body()
+        local name = (data and data.name) or "Unnamed Token"
+        local token = auth.create_api_token(db, name)
+        json_response({ token = token })
+        return
+
+    elseif path == "/api/network/info" and method == "GET" then
         local ip = network.get_lan_ip()
         json_response({
             url = "http://" .. ip .. ":" .. PORT,
@@ -207,8 +302,34 @@ function OnHttpRequest()
             stmt:bind_values(id, thread_id, data.role, data.content, metadata)
             stmt:step()
             stmt:finalize()
+
+        -- Fix 8.4: Update thread updated_at
+        local up = db:prepare("UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        up:bind_values(thread_id)
+        up:step()
+        up:finalize()
+
             json_response({ id = id, thread_id = thread_id, role = data.role, content = data.content, created_at = os.date("!%Y-%m-%dT%H:%M:%S") })
         end
+
+    elseif path:match("^/api/workspaces/(.+)$") and method == "DELETE" then
+        -- Fix 8.12: Delete Workspace
+        local id = path:match("^/api/workspaces/(.+)$")
+        -- Cascade delete is handled by DB schema ON DELETE CASCADE
+        local stmt = db:prepare("DELETE FROM workspaces WHERE id = ?")
+        stmt:bind_values(id)
+        stmt:step()
+        stmt:finalize()
+        json_response({ success = true })
+
+    elseif path:match("^/api/threads/(.+)$") and method == "DELETE" then
+        -- Fix 8.12: Delete Thread
+        local id = path:match("^/api/threads/(.+)$")
+        local stmt = db:prepare("DELETE FROM threads WHERE id = ?")
+        stmt:bind_values(id)
+        stmt:step()
+        stmt:finalize()
+        json_response({ success = true })
 
     -- Peer Management
     elseif path == "/api/peers" then
@@ -225,6 +346,42 @@ function OnHttpRequest()
     elseif path:match("^/api/peers/(.+)$") and method == "DELETE" then
         local id = path:match("^/api/peers/(.+)$")
         peers_mod.delete(db, id)
+        json_response({ success = true })
+
+    elseif path:match("^/api/peers/(.+)$") and method == "PUT" then
+        -- Fix 8.13: Update Peer
+        local id = path:match("^/api/peers/(.+)$")
+        local data = get_json_body()
+        if not data then json_response({ error = "Missing body" }, 400) return end
+
+        -- Logic to update (peers.lua usually has create/list/delete, need update)
+        -- We can just run SQL here or add to peers module. Let's add here for speed.
+        -- Updateable fields: name, base_url, api_key, model_id, context_window, is_active
+        local sql = "UPDATE peers SET "
+        local params = {}
+        local fields = {}
+
+        if data.name then table.insert(fields, "name = ?"); table.insert(params, data.name) end
+        if data.base_url then table.insert(fields, "base_url = ?"); table.insert(params, data.base_url) end
+        if data.api_key then
+            -- Encrypt
+            local enc = security.encrypt(data.api_key)
+            table.insert(fields, "api_key = ?"); table.insert(params, enc)
+        end
+        if data.model_id then table.insert(fields, "model_id = ?"); table.insert(params, data.model_id) end
+        if data.context_window then table.insert(fields, "context_window = ?"); table.insert(params, data.context_window) end
+        if data.is_active ~= nil then table.insert(fields, "is_active = ?"); table.insert(params, data.is_active) end
+
+        if #fields == 0 then json_response({ success = true }) return end -- No op
+
+        sql = sql .. table.concat(fields, ", ") .. " WHERE id = ?"
+        table.insert(params, id)
+
+        local stmt = db:prepare(sql)
+        stmt:bind_values(table.unpack(params))
+        stmt:step()
+        stmt:finalize()
+
         json_response({ success = true })
 
     elseif path == "/api/peers/discover" and method == "POST" then
@@ -353,9 +510,7 @@ function OnHttpRequest()
             json_response({ error = "Missing resolve params" }, 400)
             return
         end
-        -- Commit the resolved content
-        -- This should probably clear the conflict flag in DB if we had one.
-        -- 'docs.commit' might handle versioning.
+
         local res = docs_mod.commit(
             db,
             data.workspace_id,
@@ -365,9 +520,9 @@ function OnHttpRequest()
             "user",
             "user"
         )
-        -- Also delete from conflict_versions if exists?
-        -- The schema has 'conflict_versions'. We should clean it up.
-        local doc_id = res.document_id -- commit returns document info
+
+        -- Cleanup conflict
+        local doc_id = res.document_id
         if doc_id then
              local stmt = db:prepare("DELETE FROM conflict_versions WHERE document_id = ?")
              stmt:bind_values(doc_id)
@@ -375,6 +530,56 @@ function OnHttpRequest()
              stmt:finalize()
         end
         json_response(res)
+
+    elseif path:match("^/api/conflicts/(.+)/ancestor$") and method == "GET" then
+        local conflict_id = path:match("^/api/conflicts/(.+)/ancestor$")
+        -- Get ancestor version ID from conflict
+        local stmt = db:prepare("SELECT ancestor_version_id FROM conflict_versions WHERE id = ?")
+        stmt:bind_values(conflict_id)
+        if stmt:step() == sqlite3.ROW then
+            local ver_id = stmt:get_value(0)
+            stmt:finalize()
+
+            -- Fetch content
+            local v_stmt = db:prepare("SELECT content, version_number FROM document_versions WHERE id = ?")
+            v_stmt:bind_values(ver_id)
+            if v_stmt:step() == sqlite3.ROW then
+                local content = v_stmt:get_value(0)
+                local ver_num = v_stmt:get_value(1)
+                v_stmt:finalize()
+                json_response({ content = content, version_number = ver_num })
+            else
+                v_stmt:finalize()
+                json_response({ error = "Ancestor version not found" }, 404)
+            end
+        else
+            stmt:finalize()
+            json_response({ error = "Conflict not found" }, 404)
+        end
+
+    elseif path:match("^/api/conflicts/(.+)/automerge$") and method == "POST" then
+        local conflict_id = path:match("^/api/conflicts/(.+)/automerge$")
+
+        -- Fetch conflict details
+        local stmt = db:prepare([[
+            SELECT c.user_content, c.ai_content, v.content as base_content
+            FROM conflict_versions c
+            JOIN document_versions v ON c.ancestor_version_id = v.id
+            WHERE c.id = ?
+        ]])
+        stmt:bind_values(conflict_id)
+        if stmt:step() == sqlite3.ROW then
+            local local_text = stmt:get_value(0)
+            local remote_text = stmt:get_value(1)
+            local base_text = stmt:get_value(2)
+            stmt:finalize()
+
+            local merged = merge_mod.diff3_merge(local_text, base_text, remote_text)
+            json_response(merged)
+        else
+            stmt:finalize()
+            json_response({ error = "Conflict or base version not found" }, 404)
+        end
 
     elseif path == "/api/conflicts" and method == "GET" then
         -- List active conflicts

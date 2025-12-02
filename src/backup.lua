@@ -104,7 +104,11 @@ function M.import_workspace(db, json_data)
 
     -- Import Threads
     for _, t in ipairs(json_data.data.threads or {}) do
-        db:exec("INSERT OR REPLACE INTO threads (id, workspace_id, name, created_at) VALUES ('" .. t.id .. "', '" .. t.workspace_id .. "', '" .. t.name .. "', '" .. t.created_at .. "')")
+        -- Fix 8.6: SQL Injection
+        local stmt = db:prepare("INSERT OR REPLACE INTO threads (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)")
+        stmt:bind_values(t.id, t.workspace_id, t.name, t.created_at)
+        stmt:step()
+        stmt:finalize()
     end
 
     -- Import Messages
